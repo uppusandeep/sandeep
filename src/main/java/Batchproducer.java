@@ -1,6 +1,18 @@
-import java.io.*;
-import java.nio.file.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 
 /**
  * Batchproducer Service
@@ -19,77 +31,113 @@ public class Batchproducer {
      */
     private void loadConfiguration() {
         config = new Properties();
-        
-        // Try multiple locations for the configuration file
-        String[] possiblePaths = {
-            // 1. Current working directory
-            CONFIG_FILE_NAME,
-            // 2. User's home directory
-            System.getProperty("user.home") + File.separator + CONFIG_FILE_NAME,
-            // 3. System configuration directory
-            "/etc/batchproducer/" + CONFIG_FILE_NAME,
-            // 4. Classpath resource
-            null // Will be handled separately
-        };
-        
-        boolean loaded = false;
-        String loadedPath = null;
-        
-        // Try loading from file system paths
-        for (String path : possiblePaths) {
-            if (path == null) continue;
-            
-            try {
-                File configFile = new File(path);
-                if (configFile.exists() && configFile.isFile() && configFile.canRead()) {
-                    try (FileInputStream fis = new FileInputStream(configFile)) {
-                        config.load(fis);
-                        loaded = true;
-                        loadedPath = path;
-                        System.out.println("Configuration loaded from: " + configFile.getAbsolutePath());
-                        break;
-                    }
-                }
+        Set<Path> candidatePaths = new LinkedHashSet<>();
+        List<String> attemptedLocations = new ArrayList<>();
+
+        // Highest priority: explicit overrides
+        String systemPropertyPath = System.getProperty("batchproducer.config");
+        if (systemPropertyPath != null && !systemPropertyPath.isBlank()) {
+            candidatePaths.add(Paths.get(systemPropertyPath.trim()));
+        }
+
+        String envPath = System.getenv("BATCHPRODUCER_CONFIG");
+        if (envPath != null && !envPath.isBlank()) {
+            candidatePaths.add(Paths.get(envPath.trim()));
+        }
+
+        // Application locations
+        Path applicationDirectory = resolveApplicationDirectory();
+        if (applicationDirectory != null) {
+            candidatePaths.add(applicationDirectory.resolve(CONFIG_FILE_NAME));
+            candidatePaths.add(applicationDirectory.resolve("config").resolve(CONFIG_FILE_NAME));
+        }
+
+        // Standard locations
+        candidatePaths.add(Paths.get(CONFIG_FILE_NAME)); // Current working directory
+        candidatePaths.add(Paths.get(System.getProperty("user.home"), CONFIG_FILE_NAME)); // User home directory
+        candidatePaths.add(Paths.get("/etc/batchproducer", CONFIG_FILE_NAME)); // System configuration directory
+
+        for (Path candidate : candidatePaths) {
+            Path normalized = candidate.toAbsolutePath().normalize();
+            attemptedLocations.add(normalized.toString());
+
+            if (!Files.exists(normalized)) {
+                continue;
+            }
+            if (!Files.isRegularFile(normalized) || !Files.isReadable(normalized)) {
+                System.err.println("Configuration file found but not readable: " + normalized);
+                continue;
+            }
+
+            try (InputStream inputStream = Files.newInputStream(normalized)) {
+                config.load(inputStream);
+                System.out.println("Configuration loaded from: " + normalized);
+                return;
             } catch (IOException e) {
-                // Continue to next path
-                System.err.println("Failed to load from " + path + ": " + e.getMessage());
+                System.err.println("Failed to load configuration from " + normalized + ": " + e.getMessage());
             }
         }
-        
+
         // Try loading from classpath as fallback
-        if (!loaded) {
-            try (InputStream is = getClass().getClassLoader().getResourceAsStream(CONFIG_FILE_NAME)) {
+        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+        if (classLoader == null) {
+            classLoader = getClass().getClassLoader();
+        }
+
+        String[] classpathCandidates = {
+            CONFIG_FILE_NAME,
+            "config/" + CONFIG_FILE_NAME
+        };
+
+        for (String resourceName : classpathCandidates) {
+            attemptedLocations.add("classpath:" + resourceName);
+            try (InputStream is = classLoader.getResourceAsStream(resourceName)) {
                 if (is != null) {
                     config.load(is);
-                    loaded = true;
-                    loadedPath = "classpath:" + CONFIG_FILE_NAME;
-                    System.out.println("Configuration loaded from classpath: " + CONFIG_FILE_NAME);
+                    System.out.println("Configuration loaded from classpath: " + resourceName);
+                    return;
                 }
             } catch (IOException e) {
-                System.err.println("Failed to load from classpath: " + e.getMessage());
+                System.err.println("Failed to load configuration from classpath resource " + resourceName + ": " + e.getMessage());
             }
         }
-        
-        // If still not loaded, create default configuration or throw exception
-        if (!loaded) {
-            String errorMsg = String.format(
-                "Failed to load configuration file '%s' from any of the following locations:\n" +
-                "  - Current directory: %s\n" +
-                "  - User home: %s\n" +
-                "  - System config: /etc/batchproducer/%s\n" +
-                "  - Classpath: %s\n" +
-                "Please ensure the configuration file exists in one of these locations.",
-                CONFIG_FILE_NAME,
-                new File(CONFIG_FILE_NAME).getAbsolutePath(),
-                System.getProperty("user.home") + File.separator + CONFIG_FILE_NAME,
-                CONFIG_FILE_NAME,
-                CONFIG_FILE_NAME
-            );
-            
-            System.err.println(errorMsg);
-            throw new RuntimeException("Failed to load configuration file: " + CONFIG_FILE_NAME, 
-                new FileNotFoundException("Configuration file not found in any standard location"));
+
+        // If still not loaded, throw exception with detailed message
+        StringBuilder errorMsg = new StringBuilder();
+        errorMsg.append("Failed to load configuration file '")
+                .append(CONFIG_FILE_NAME)
+                .append("' from any known location.\nAttempted locations:");
+        for (String location : attemptedLocations) {
+            errorMsg.append("\n  - ").append(location);
         }
+        errorMsg.append("\nPlease set the 'batchproducer.config' system property, the 'BATCHPRODUCER_CONFIG' environment variable, or place the file in one of the attempted locations.");
+
+        System.err.println(errorMsg.toString());
+        throw new IllegalStateException("Failed to load configuration file: " + CONFIG_FILE_NAME,
+            new FileNotFoundException("Configuration file not found in any tried location"));
+    }
+    
+    /**
+     * Determines the directory where the application (JAR or classes) is located.
+     */
+    private Path resolveApplicationDirectory() {
+        try {
+            URL location = getClass().getProtectionDomain().getCodeSource().getLocation();
+            if (location == null) {
+                return null;
+            }
+
+            Path path = Paths.get(location.toURI());
+            if (Files.isRegularFile(path)) {
+                return path.getParent();
+            }
+            if (Files.isDirectory(path)) {
+                return path;
+            }
+        } catch (URISyntaxException e) {
+            System.err.println("Unable to resolve application directory: " + e.getMessage());
+        }
+        return null;
     }
     
     /**
@@ -110,7 +158,9 @@ public class Batchproducer {
      * Gets all configuration properties
      */
     public Properties getConfig() {
-        return new Properties(config); // Return a copy for safety
+        Properties copy = new Properties();
+        copy.putAll(config);
+        return copy;
     }
     
     /**
