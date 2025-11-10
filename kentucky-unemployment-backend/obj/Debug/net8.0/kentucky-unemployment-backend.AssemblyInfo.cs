@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("kentucky-unemployment-backend")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ed6ab98bd100bc6e8a675d0daa68740483009104")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+5b512a8e557d1f2cf109e097b329937cf2a4339a")]
 [assembly: System.Reflection.AssemblyProductAttribute("kentucky-unemployment-backend")]
 [assembly: System.Reflection.AssemblyTitleAttribute("kentucky-unemployment-backend")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
